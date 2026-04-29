@@ -1,0 +1,26 @@
+[
+  {
+    "region": "Bengaluru",
+    "state": "Karnataka",
+    "year": 2023,
+    "light": 21.8069,
+    "rainfall": 1020.2,
+    "depletion": -24.8,
+    "risk_score": 0.15,
+    "risk": "Low",
+    "future_risk": "Low Risk",
+    "forecast": [
+      {
+        "year": 2025,
+        "risk": "Low",
+        "future_risk": "Low Risk"
+      },
+      {
+        "year": 2026,
+        "risk": "Low",
+        "future_risk": "Low Risk"
+      }
+    ],
+    "alert": null
+  }
+]

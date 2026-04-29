@@ -1,0 +1,103 @@
+{
+  "Bengaluru": [
+    {
+      "year": 2021,
+      "light": 18.49194097,
+      "rainfall": 1511.1,
+      "depletion": -4.2,
+      "risk_score": 0.23275862068965517,
+      "risk": "Low",
+      "is_forecast": false
+    },
+    {
+      "year": 2021,
+      "light": 18.49194097,
+      "rainfall": 1511.1,
+      "depletion": -7.8,
+      "risk_score": 0.2603448275862069,
+      "risk": "Low",
+      "is_forecast": false
+    },
+    {
+      "year": 2021,
+      "light": 18.49194097,
+      "rainfall": 1511.1,
+      "depletion": -11.5,
+      "risk_score": 0.2611111111111111,
+      "risk": "Low",
+      "is_forecast": false
+    },
+    {
+      "year": 2022,
+      "light": 19.58565625,
+      "rainfall": 1957.7,
+      "depletion": -14.3,
+      "risk_score": 0.5149649728793311,
+      "risk": "Medium",
+      "is_forecast": false
+    },
+    {
+      "year": 2022,
+      "light": 19.58565625,
+      "rainfall": 1957.7,
+      "depletion": -22.7,
+      "risk_score": 0.29712643678160916,
+      "risk": "Low",
+      "is_forecast": false
+    },
+    {
+      "year": 2022,
+      "light": 19.58565625,
+      "rainfall": 1957.7,
+      "depletion": -13.1,
+      "risk_score": 0.15919540229885057,
+      "risk": "Low",
+      "is_forecast": false
+    },
+    {
+      "year": 2023,
+      "light": 21.80694444,
+      "rainfall": 1020.2,
+      "depletion": -28.4,
+      "risk_score": 0.8500000000000001,
+      "risk": "High",
+      "is_forecast": false
+    },
+    {
+      "year": 2023,
+      "light": 21.80694444,
+      "rainfall": 1020.2,
+      "depletion": -35.6,
+      "risk_score": 0.28793103448275864,
+      "risk": "Low",
+      "is_forecast": false
+    },
+    {
+      "year": 2023,
+      "light": 21.80694444,
+      "rainfall": 1020.2,
+      "depletion": -24.8,
+      "risk_score": 0.15,
+      "risk": "Low",
+      "is_forecast": false
+    },
+    {
+      "year": 2025,
+      "light": 22.2251,
+      "rainfall": 1020.2,
+      "depletion": -24.8,
+      "risk_score": 0.165,
+      "risk": "Low",
+      "is_forecast": true
+    },
+    {
+      "year": 2026,
+      "light": 22.2251,
+      "rainfall": 1020.2,
+      "depletion": -24.8,
+      "risk_score": 0.165,
+      "risk": "Low",
+      "is_forecast": true
+    }
+  ]
+}
