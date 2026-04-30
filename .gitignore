@@ -1,3 +1,61 @@
-node_modules
-.env
-./venv
+## Node
+node_modules/
+dist/
+build/
+
+## Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+.venv/
+venv/
+env/
+ENV/
+/.env
+/.env.*
+
+# Jupyter
+.ipynb_checkpoints
+
+## Virtual environment
+venv/
+ENV/
+env/
+
+## Editor/IDE
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+## OS files
+.DS_Store
+Thumbs.db
+
+## Python packaging
+pip-log.txt
+pip-delete-this-directory.txt
+
+## Data and model artifacts (do not commit large generated files)
+data/*.csv
+outputs/
+models/
+server/models/
+
+## Logs
+*.log
+logs/
+
+## Build artifacts
+*.pyc
+__pycache__/
+
+## Misc
+.env.local
+.env.production
+.env.development
+
+# Local Node env
+.npm
+.cache

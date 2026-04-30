@@ -3,6 +3,7 @@ import L from "leaflet";
 import { MapContainer, TileLayer, GeoJSON, Popup, Marker, useMap } from "react-leaflet";
 
 import bbmpGeoJsonRaw from "../data/BBMP.geojson?raw";
+import { scoreToCategory, scoreToColor, useWaterRisk } from "../context/WaterRiskContext";
 
 const bbmpGeoJson = JSON.parse(bbmpGeoJsonRaw);
 
@@ -13,41 +14,6 @@ const offices = [
   { name: "Jayangar Office", position: [12.9250, 77.5938] },
   { name: "K.R. Puram Office", position: [13.0050, 77.6950] },
 ];
-
-function clamp(value, min, max) {
-  return Math.min(Math.max(value, min), max);
-}
-
-function scoreToColor(score) {
-  // Map score to color according to risk bands
-  if (score >= 95) return "#b91c1c"; // Critical - deep red
-  if (score >= 85) return "#ef4444"; // High - red
-  if (score >= 70) return "#f97316"; // Medium-High - orange
-  if (score >= 50) return "#f59e0b"; // Medium - amber
-  if (score >= 30) return "#10b981"; // Low-Medium - emerald
-  return "#06b6d4"; // Safe - cyan
-}
-
-function getCategory(score) {
-  if (score >= 95) return "Critical";
-  if (score >= 85) return "High";
-  if (score >= 70) return "Medium-High";
-  if (score >= 50) return "Medium";
-  if (score >= 30) return "Low-Medium";
-  return "Safe";
-}
-
-function createInitialScores(data) {
-  const scores = {};
-
-  data.features.forEach((feature) => {
-    const wardNo = Number(feature.properties.KGISWardNo) || 0;
-    const seeded = Math.abs(Math.sin(wardNo * 12.37) * 100);
-    scores[feature.properties.KGISWardCode] = Math.round(clamp(seeded, 15, 95));
-  });
-
-  return scores;
-}
 
 function FitGeoBounds({ data }) {
   const map = useMap();
@@ -62,9 +28,9 @@ function FitGeoBounds({ data }) {
 }
 
 export default function BengaluruMap({ selectedWard, onWardSelect, onHighRiskWardChange }) {
-  const [scores, setScores] = useState(() => createInitialScores(bbmpGeoJson));
   const [infoOpen, setInfoOpen] = useState(false);
   const [legendOpen, setLegendOpen] = useState(true);
+  const { selectedYear, dataset, getYearRecords, isDatasetLoading } = useWaterRisk();
   const layerRef = useRef(null);
 
   // DivIcon for pin-style office markers
@@ -80,62 +46,71 @@ export default function BengaluruMap({ selectedWard, onWardSelect, onHighRiskWar
     iconAnchor: [14, 34],
   });
 
-  useEffect(() => {
-    const id = setInterval(() => {
-      setScores((prev) => {
-        const next = { ...prev };
-
-        Object.keys(next).forEach((key) => {
-          const drift = Math.floor(Math.random() * 11) - 5;
-          next[key] = clamp(next[key] + drift, 0, 100);
-        });
-
-        return next;
-      });
-    }, 3000);
-
-    return () => clearInterval(id);
-  }, []);
-
   const highestHighRiskWard = useMemo(() => {
     let bestWard = null;
+    const yearRecords = getYearRecords(selectedYear);
 
-    bbmpGeoJson.features.forEach((feature) => {
-      const wardCode = feature.properties.KGISWardCode;
-      const score = scores[wardCode] ?? 0;
-
-      if (score >= 85 && (!bestWard || score > bestWard.score)) {
+    yearRecords.forEach((record) => {
+      if (record.water_potential_score >= 85 && (!bestWard || record.water_potential_score > bestWard.score)) {
         bestWard = {
-          code: wardCode,
-          name: feature.properties.KGISWardName,
-          number: feature.properties.KGISWardNo,
-          score,
+          code: record.ward_code,
+          name: record.ward_name,
+          score: record.water_potential_score,
+          year: record.year,
         };
       }
     });
 
     return bestWard;
-  }, [scores]);
+  }, [getYearRecords, selectedYear]);
 
   useEffect(() => {
     onHighRiskWardChange?.(highestHighRiskWard);
   }, [highestHighRiskWard, onHighRiskWardChange]);
 
-  const geoJsonKey = useMemo(() => `${selectedWard?.code ?? "none"}-${JSON.stringify(scores)}`, [selectedWard?.code, scores]);
+  const yearRecords = useMemo(() => getYearRecords(selectedYear), [getYearRecords, selectedYear]);
+
+  const wardScoreMap = useMemo(() => {
+    const next = new Map();
+
+    yearRecords.forEach((record) => {
+      next.set(record.ward_code, record);
+    });
+
+    return next;
+  }, [yearRecords]);
+
+  const geoJsonKey = useMemo(
+    () => `${selectedWard?.code ?? "none"}-${selectedYear}-${yearRecords.length}-${dataset.length}`,
+    [dataset.length, selectedWard?.code, selectedYear, yearRecords.length]
+  );
 
   const onEachFeature = (feature, layer) => {
     const wardCode = feature.properties.KGISWardCode;
     const wardName = feature.properties.KGISWardName;
     const wardNo = feature.properties.KGISWardNo;
-    const score = scores[wardCode] ?? 0;
+    const record = wardScoreMap.get(wardCode);
+    const score = record?.water_potential_score ?? 0;
+    const category = scoreToCategory(score);
+    const sourceLabel = record?.source === "predicted" ? "ML Predicted" : "Historical";
 
-    const category = getCategory(score);
-
-    layer.bindTooltip(`${wardName} (Ward ${wardNo}) — ${score} (${category})`, {
-      sticky: true,
-      direction: "top",
-      opacity: 0.95,
-    });
+    layer.bindTooltip(
+      `
+        <div class="custom-leaflet-content">
+          <div class="title">${wardName}</div>
+          <div class="meta">Ward: ${wardNo}</div>
+          <div class="meta">Year: ${selectedYear}</div>
+          <div class="meta">Water Potential Score: ${score}</div>
+          <div class="meta">Risk Category: ${category}</div>
+          <div class="mt-1 text-[11px] uppercase tracking-wide text-cyan-200/80">${sourceLabel}</div>
+        </div>
+      `,
+      {
+        sticky: true,
+        direction: "top",
+        opacity: 0.98,
+      }
+    );
 
     layer.on({
       mouseover: () => {
@@ -152,7 +127,6 @@ export default function BengaluruMap({ selectedWard, onWardSelect, onHighRiskWar
           code: wardCode,
           name: wardName,
           number: wardNo,
-          score,
         });
       },
     });
@@ -160,6 +134,14 @@ export default function BengaluruMap({ selectedWard, onWardSelect, onHighRiskWar
 
   return (
     <div className="relative h-180 rounded-2xl border border-blue-500/25 bg-[#030c1d] p-3">
+      {isDatasetLoading && (
+        <div className="absolute right-4 top-4 z-600 rounded-xl border border-blue-500/35 bg-[#061631]/95 p-3 text-xs text-blue-100 shadow-lg">
+          <div className="flex items-center gap-2">
+            <div className="h-3 w-3 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
+            <span>Loading year-wise dataset...</span>
+          </div>
+        </div>
+      )}
       {legendOpen ? (
         <div className="absolute right-4 top-4 z-500 rounded-xl border border-blue-500/35 bg-[#061631]/95 p-3 text-xs text-blue-100 shadow-lg text-left">
           <div className="flex items-center justify-between mb-2">
@@ -188,15 +170,15 @@ export default function BengaluruMap({ selectedWard, onWardSelect, onHighRiskWar
             <span className="text-sm">Medium-High (70 - 85)</span>
           </div>
           <div className="mb-2 flex items-center gap-2">
-            <span className="inline-block h-3 w-6 rounded" style={{ background: '#f59e0b' }} />
+            <span className="inline-block h-3 w-6 rounded" style={{ background: '#eab308' }} />
             <span className="text-sm">Medium (50 - 70)</span>
           </div>
           <div className="mb-2 flex items-center gap-2">
-            <span className="inline-block h-3 w-6 rounded" style={{ background: '#10b981' }} />
+            <span className="inline-block h-3 w-6 rounded" style={{ background: '#22c55e' }} />
             <span className="text-sm">Low-Medium (30 - 50)</span>
           </div>
           <div className="mb-2 flex items-center gap-2">
-            <span className="inline-block h-3 w-6 rounded" style={{ background: '#06b6d4' }} />
+            <span className="inline-block h-3 w-6 rounded" style={{ background: '#84cc16' }} />
             <span className="text-sm">Safe (0 - 30)</span>
           </div>
           <div className="mt-1 flex items-center gap-2">
@@ -237,7 +219,7 @@ export default function BengaluruMap({ selectedWard, onWardSelect, onHighRiskWar
             ref={layerRef}
             data={bbmpGeoJson}
             style={(feature) => {
-              const score = scores[feature.properties.KGISWardCode] ?? 0;
+              const score = wardScoreMap.get(feature.properties.KGISWardCode)?.water_potential_score ?? 0;
               const isSelected = selectedWard?.code === feature.properties.KGISWardCode;
 
               return {
@@ -263,7 +245,14 @@ export default function BengaluruMap({ selectedWard, onWardSelect, onHighRiskWar
           <p className="mb-1 font-semibold text-lime-300">Selected Ward</p>
           <p>
             {selectedWard
-              ? `${selectedWard.name} (Ward ${selectedWard.number}) - ${selectedWard.score} (${getCategory(selectedWard.score)})`
+              ? (() => {
+                  const selectedRecord = yearRecords.find((record) => record.ward_code === selectedWard.code);
+                  if (!selectedRecord) {
+                    return `${selectedWard.name} (Ward ${selectedWard.number})`;
+                  }
+
+                  return `${selectedWard.name} (Ward ${selectedWard.number}) - ${selectedRecord.water_potential_score} (${scoreToCategory(selectedRecord.water_potential_score)})`;
+                })()
               : "Click a ward to view details."}
           </p>
         </div>
@@ -275,13 +264,28 @@ export default function BengaluruMap({ selectedWard, onWardSelect, onHighRiskWar
           <div className="flex items-start justify-between">
             <div>
               <p className="mb-1 font-semibold text-cyan-300">Map Info</p>
-              <p className="text-xs text-blue-200/80">BBMP ward polygons are rendered from GeoJSON. Colors represent live underground water potential scores.</p>
+              <p className="text-xs text-blue-200/80">
+                {selectedYear <= 2024
+                  ? "BBMP ward polygons with historical water potential scores for the selected year."
+                  : "BBMP ward polygons with ML-predicted water potential scores for the selected year."}
+              </p>
             </div>
             <button onClick={() => setInfoOpen(false)} className="ml-3 rounded bg-blue-700/30 px-2 py-1 text-xs">Close</button>
           </div>
           <div className="mt-3 text-xs">
             <p className="font-semibold text-blue-100/90">Selected Ward</p>
-            <p className="text-blue-200/80">{selectedWard ? `${selectedWard.name} (Ward ${selectedWard.number}) - ${selectedWard.score} (${getCategory(selectedWard.score)})` : 'Click a ward to view details.'}</p>
+            <p className="text-blue-200/80">
+              {selectedWard
+                ? (() => {
+                    const selectedRecord = yearRecords.find((record) => record.ward_code === selectedWard.code);
+                    if (!selectedRecord) {
+                      return `${selectedWard.name} (Ward ${selectedWard.number})`;
+                    }
+
+                    return `${selectedWard.name} (Ward ${selectedWard.number}) - ${selectedRecord.water_potential_score} (${scoreToCategory(selectedRecord.water_potential_score)})`;
+                  })()
+                : 'Click a ward to view details.'}
+            </p>
           </div>
         </div>
       )}

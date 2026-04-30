@@ -41,3 +41,26 @@ h3 {
 	color: #e2e8f0;
 	border: 1px solid #2563eb;
 }
+
+/* Custom tooltip/popup content used in map tooltips */
+.custom-leaflet-content {
+	background: rgba(7, 21, 43, 0.95);
+	color: #e2e8f0;
+	padding: 10px 12px;
+	border-radius: 10px;
+	border: 1px solid rgba(37, 99, 235, 0.18);
+	box-shadow: 0 10px 30px rgba(2, 6, 23, 0.6);
+	min-width: 180px;
+}
+
+.custom-leaflet-content .title {
+	font-weight: 700;
+	color: #7dd3fc;
+	margin-bottom: 6px;
+}
+
+.custom-leaflet-content .meta {
+	font-size: 13px;
+	color: #cfe8ff;
+	opacity: 0.95;
+}
