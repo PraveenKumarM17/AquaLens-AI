@@ -1,14 +1,15 @@
 #!/usr/bin/env python
 """
-Setup script to generate dataset and train the ML model.
-Run this once to prepare the backend for serving predictions.
+Setup script: generates dataset and trains the v3 XGBoost model.
+Run once before starting the API server.
+
+Usage:
+    python setup.py
 """
 
 import sys
 from pathlib import Path
-import pandas as pd
 
-# Add current directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from dataset_generator import generate_dataset, save_dataset
@@ -17,41 +18,50 @@ from model import WaterPotentialModel
 
 def main():
     print("=" * 60)
-    print("AquaLens ML Backend Setup")
+    print("AquaLens ML Backend Setup  (model v3 – XGBoost)")
     print("=" * 60)
-    
-    # Step 1: Generate dataset
-    print("\n[1/3] Generating year-wise dataset for Bengaluru wards (2012-2024)...")
-    df = generate_dataset(n_samples_per_ward=50, random_state=42)
-    print(f"✓ Dataset generated: {df.shape[0]} samples, {df.shape[1]} columns")
-    print(f"  Ward codes: {df['ward_code'].nunique()}")
-    print(f"  Years covered: {df['year'].min()}-{df['year'].max()}")
-    print(f"  Score range: {df['water_potential_score'].min()}-{df['water_potential_score'].max()}")
-    
-    # Step 2: Save dataset
-    print("\n[2/3] Saving dataset...")
-    dataset_path = save_dataset(df)
-    print(f"✓ Dataset saved to {dataset_path}")
-    
-    # Step 3: Train model
-    print("\n[3/3] Training Random Forest model on year-wise data...")
-    model = WaterPotentialModel()
-    metrics = model.train(df, test_size=0.2, random_state=42)
-    print("✓ Model training completed")
-    
-    # Step 4: Save model
-    print("\n[4/4] Saving trained model...")
+
+    # 1. Generate dataset
+    print("\n[1/3] Generating year-wise dataset for Bengaluru wards (2012-2024)…")
+    df = generate_dataset(n_samples_per_ward=200, random_state=42)
+    print(f"✓ Dataset generated: {df.shape[0]:,} samples, {df.shape[1]} columns")
+    print(f"  Wards   : {df['ward_code'].nunique()}")
+    print(f"  Years   : {df['year'].min()}–{df['year'].max()}")
+    print(f"  Score µ : {df['water_potential_score'].mean():.1f}  "
+          f"σ={df['water_potential_score'].std():.1f}  "
+          f"range=[{df['water_potential_score'].min()},{df['water_potential_score'].max()}]")
+
+    # 2. Save dataset
+    print("\n[2/3] Saving dataset…")
+    path = save_dataset(df)
+    print(f"✓ Saved to {path}")
+
+    # 3. Train model
+    print("\n[3/3] Training XGBoost model…")
+    model   = WaterPotentialModel()
+    metrics = model.train(df, test_size=0.15, random_state=42)
+
+    print("\n✓ Training complete")
+    print(f"  Test R²   : {metrics['test_r2']:.4f}")
+    print(f"  Test MAE  : {metrics['test_mae']:.2f} pts")
+    print(f"  Test RMSE : {metrics['test_rmse']:.2f} pts")
+
+    r2 = metrics["test_r2"]
+    if r2 >= 0.90:
+        print(f"\n🎯 Target achieved! R² = {r2:.4f} ≥ 0.90")
+    else:
+        print(f"\n⚠️  R² = {r2:.4f} – below 0.90 target. Check dataset quality.")
+
+    # 4. Save model
     model.save()
-    print("✓ Model saved")
-    
+    print("✓ Model saved to models/water_potential_model.pkl")
+
     print("\n" + "=" * 60)
-    print("Setup Complete!")
+    print("Setup complete!")
     print("=" * 60)
     print("\nNext steps:")
-    print("1. Start the API server:")
-    print("   python -m uvicorn main:app --reload --port 8000")
-    print("\n2. API will be available at: http://localhost:8000")
-    print("3. API documentation: http://localhost:8000/docs")
+    print("  python -m uvicorn main:app --reload --port 8000")
+    print("  Open http://localhost:8000/docs  for interactive API docs")
     print("=" * 60)
 
 
