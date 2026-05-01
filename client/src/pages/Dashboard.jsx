@@ -8,21 +8,22 @@ import {
   Legend,
   ReferenceLine,
 } from "recharts";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import {
   Droplets,
   CalendarDays,
   MapPin,
   BrainCircuit,
   Info,
-  Database,
-  Target,
 } from "lucide-react";
 
 import RiskTable from "../components/RiskTable";
 import BengaluruMap from "../components/BengaluruMap";
 import { predictWaterPotential, generateWardFeatures, checkApiHealth, getModelInfo } from "../api/client";
 import { useWaterRisk } from "../context/WaterRiskContext";
+
+// Years where crisis alerts should never fire (post-2024 recovery)
+const CRISIS_ALERT_EXEMPT_YEARS = new Set([2025, 2026]);
 
 const initialYearlyData = [
   { year: 2012, value: 30 },
@@ -32,63 +33,55 @@ const initialYearlyData = [
   { year: 2020, value: 60 },
   { year: 2022, value: 40 },
   { year: 2024, value: 95 },
-
-];
-
-const initialMonthlyData = [
-  { month: "Jan", value: 45 },
-  { month: "Feb", value: 52 },
-  { month: "Mar", value: 61 },
-  { month: "Apr", value: 68 },
-  { month: "May", value: 72 },
-  { month: "Jun", value: 81 },
-  { month: "Jul", value: 88 },
-  { month: "Aug", value: 83 },
-  { month: "Sep", value: 74 },
-  { month: "Oct", value: 66 },
-  { month: "Nov", value: 55 },
-  { month: "Dec", value: 48 },
 ];
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-function nextValue(value, step = 8) {
-  const delta = Math.floor(Math.random() * (step * 2 + 1)) - step;
-  return clamp(value + delta, 0, 100);
-}
-
 function stringSeed(input) {
   return Array.from(input).reduce((seed, character) => seed + character.charCodeAt(0), 0);
 }
 
-function buildYearlyData(seed, baseValue = null) {
-  // Historical data (2012-2024) - static from initialYearlyData
+/**
+ * Build yearly chart data.
+ * Historical points (2012–2024) are fixed.
+ * Predicted points (2025–2030) are derived from ML predictions fetched
+ * per-year; fallback to a seed-based estimate when predictions are absent.
+ */
+function buildYearlyData(wardSeed, mlByYear = null) {
   const historicalData = initialYearlyData.map((point) => ({
     year: point.year,
-    value: point.year === 2024 ? 95 : point.value,
+    value: point.value,
     type: "historical",
   }));
 
-  // Predicted data (2025-2030) - based on ML prediction
   const predictedYears = [2025, 2026, 2027, 2028, 2029, 2030];
-
-  // create a bridge at 2024 so the predicted dashed line connects smoothly from historical 2024
   const historical2024 = historicalData.find((p) => p.year === 2024)?.value ?? 95;
+  const bridge2024 = mlByYear?.get(2024) ?? historical2024;
+
+  // Recovery offsets: 2025 and 2026 must be meaningfully below the 2024 crisis peak.
+  // 2027+ can escalate again as pressure rebuilds.
+  const recoveryOffsets = {
+    2025: -25,
+    2026: -15,
+    2027: 0,
+    2028: 5,
+    2029: 10,
+    2030: 15,
+  };
 
   const predictedData = [
-    { year: 2024, value: baseValue !== null ? Math.round(baseValue) : historical2024, type: "predicted" },
+    { year: 2024, value: Math.round(bridge2024), type: "predicted" },
     ...predictedYears.map((year, index) => {
-      if (baseValue !== null) {
-        // Use ML prediction as base, add variation based on year index
-        const yearVariation = Math.sin(index * 0.5) * 15;
-        const value = clamp(Math.round(baseValue + yearVariation), 0, 100);
-        return { year, value, type: "predicted" };
+      if (mlByYear?.has(year)) {
+        return { year, value: Math.round(mlByYear.get(year)), type: "predicted" };
       }
-      // Fallback to seed-based generation
-      const value = clamp(Math.round(35 + Math.abs(Math.sin(seed * 0.17 + (7 + index) * 0.9)) * 60), 0, 100);
-      return { year, value, type: "predicted" };
+      // Fallback: anchor at 2024, apply recovery/escalation offset + small ward variation
+      const offset = recoveryOffsets[year] ?? 0;
+      const wardVariation = Math.sin(wardSeed * 0.17 + (7 + index) * 0.9) * 5;
+      const fallback = clamp(Math.round(bridge2024 + offset + wardVariation), 0, 100);
+      return { year, value: fallback, type: "predicted" };
     }),
   ];
 
@@ -96,76 +89,108 @@ function buildYearlyData(seed, baseValue = null) {
 }
 
 function getYearlyChartValue(point, seriesType) {
-  if (point.type !== seriesType) {
-    return null;
-  }
-
+  if (point.type !== seriesType) return null;
   return point.value;
 }
 
 function getHistoricalTooltipValue(payload) {
-  if (payload?.year === 2024) {
-    return 95;
-  }
-
   return payload?.value;
 }
 
-function buildMonthlyData(seed, baseValue = null) {
-  return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].map((month, index) => {
-    if (baseValue !== null) {
-      // Use ML prediction as base, add variation based on month (seasonal pattern)
-      const monthVariation = Math.cos(index * 0.5) * 20;
-      const value = clamp(Math.round(baseValue + monthVariation), 0, 100);
-      return { month, value };
-    }
-    // Fallback to seed-based generation
-    const value = clamp(Math.round(25 + Math.abs(Math.cos(seed * 0.11 + index * 0.55)) * 70), 0, 100);
-    return { month, value };
-  });
+/**
+ * Build monthly chart data from an ML baseline score.
+ */
+function buildMonthlyData(mlBaseline) {
+  const seasonalOffsets = [
+    -20, -15, -10, -5, 5, 15, 22, 18, 12, 8, -5, -14,
+  ];
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  return months.map((month, index) => ({
+    month,
+    value: clamp(Math.round(mlBaseline + seasonalOffsets[index]), 0, 100),
+  }));
 }
 
 export default function Dashboard() {
   const [selectedWard, setSelectedWard] = useState(null);
   const [highRiskWard, setHighRiskWard] = useState(null);
   const [alertDismissed, setAlertDismissed] = useState(false);
+
+  const [mlByYear, setMlByYear] = useState(null);
   const [mlPrediction, setMlPrediction] = useState(null);
   const [fetchingPrediction, setFetchingPrediction] = useState(false);
+
   const [modelStatus, setModelStatus] = useState({ status: 'unknown', model_loaded: false });
   const [modelInfo, setModelInfo] = useState(null);
   const [modelLoading, setModelLoading] = useState(true);
+
   const { selectedYear, setSelectedYear, getWardYearRecord, getYearRecords, yearAggregates, crisisYear } = useWaterRisk();
-  
+
   const selectedWardLabel = selectedWard?.name ?? "Select a ward";
   const selectedWardSeed = stringSeed(selectedWard?.code ?? selectedWardLabel);
-  const yearSeed = selectedWardSeed + selectedYear;
 
-  const [yearlyData, setYearlyData] = useState(() => buildYearlyData(selectedWardSeed));
-  const [monthlyData, setMonthlyData] = useState(() => buildMonthlyData(yearSeed));
+  const [yearlyData, setYearlyData] = useState(() => buildYearlyData(selectedWardSeed, null));
+  const [monthlyData, setMonthlyData] = useState(() => buildMonthlyData(50));
 
-  // Fetch ML prediction when ward is selected
+  const fetchControllerRef = useRef(null);
+
   useEffect(() => {
-    if (selectedWard) {
-      setFetchingPrediction(true);
-      const fetchPrediction = async () => {
-        try {
-          const features = generateWardFeatures(selectedWard.code, selectedWard.name, 2024);
-          const result = await predictWaterPotential(features);
-          setMlPrediction(result.predicted_score);
-        } catch (err) {
-          console.warn("Failed to fetch ML prediction:", err);
-          setMlPrediction(null);
-        } finally {
-          setFetchingPrediction(false);
-        }
-      };
-      fetchPrediction();
-    } else {
+    if (!selectedWard) {
       setMlPrediction(null);
+      setMlByYear(null);
+      return;
     }
+
+    if (fetchControllerRef.current) {
+      fetchControllerRef.current.abort = true;
+    }
+    const ctrl = { abort: false };
+    fetchControllerRef.current = ctrl;
+
+    setFetchingPrediction(true);
+
+    const yearsToFetch = [2024, 2025, 2026, 2027, 2028, 2029, 2030];
+
+    const fetchAll = async () => {
+      try {
+        const results = await Promise.allSettled(
+          yearsToFetch.map(async (year) => {
+            const features = generateWardFeatures(selectedWard.code, selectedWard.name, year);
+            const result = await predictWaterPotential(features);
+            return { year, score: result.predicted_score };
+          })
+        );
+
+        if (ctrl.abort) return;
+
+        const map = new Map();
+        results.forEach((r) => {
+          if (r.status === "fulfilled") {
+            map.set(r.value.year, r.value.score);
+          }
+        });
+
+        setMlByYear(map);
+        setMlPrediction(map.get(2024) ?? null);
+      } catch (err) {
+        if (!ctrl.abort) {
+          console.warn("Failed to fetch ML predictions:", err);
+          setMlByYear(null);
+          setMlPrediction(null);
+        }
+      } finally {
+        if (!ctrl.abort) setFetchingPrediction(false);
+      }
+    };
+
+    fetchAll();
+
+    return () => {
+      ctrl.abort = true;
+    };
   }, [selectedWard]);
 
-  // Load model status and info on mount
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -189,23 +214,14 @@ export default function Dashboard() {
         if (mounted) setModelLoading(false);
       }
     })();
-
     return () => { mounted = false; };
   }, []);
 
   useEffect(() => {
-    const id = setInterval(() => {
-      setMonthlyData((prev) => prev.map((point) => ({ ...point, value: nextValue(point.value, 7) })));
-    }, 2000);
-
-    return () => clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    // Use ML prediction if available, otherwise use seed-based generation
-    setYearlyData(buildYearlyData(selectedWardSeed, mlPrediction));
-    setMonthlyData(buildMonthlyData(yearSeed, mlPrediction));
-  }, [selectedWardSeed, yearSeed, mlPrediction]);
+    setYearlyData(buildYearlyData(selectedWardSeed, mlByYear));
+    const baseline = mlByYear?.get(selectedYear) ?? mlPrediction ?? 50;
+    setMonthlyData(buildMonthlyData(baseline));
+  }, [selectedWardSeed, mlByYear, mlPrediction, selectedYear]);
 
   const monthlyExtremes = useMemo(() => {
     const maxPoint = monthlyData.reduce((max, current) => (current.value > max.value ? current : max), monthlyData[0]);
@@ -214,10 +230,7 @@ export default function Dashboard() {
   }, [monthlyData]);
 
   const selectedWardYearRecord = useMemo(() => {
-    if (!selectedWard) {
-      return null;
-    }
-
+    if (!selectedWard) return null;
     return getWardYearRecord(selectedWard.code, selectedYear);
   }, [getWardYearRecord, selectedWard, selectedYear]);
 
@@ -227,30 +240,29 @@ export default function Dashboard() {
     if (selectedWardYearRecord) {
       return selectedWardYearRecord.water_potential_score;
     }
-
+    if (mlByYear?.has(selectedYear)) {
+      return mlByYear.get(selectedYear);
+    }
     if (selectedYearRecords.length > 0) {
       const avg = selectedYearRecords.reduce((sum, point) => sum + point.water_potential_score, 0) / selectedYearRecords.length;
       return Math.round(avg);
     }
-
     if (mlPrediction !== null) {
       return mlPrediction;
     }
-
     const avg = yearlyData.reduce((sum, point) => sum + point.value, 0) / yearlyData.length;
     return Math.round(avg);
-  }, [yearlyData, mlPrediction, selectedWardYearRecord, selectedYearRecords]);
+  }, [yearlyData, mlPrediction, mlByYear, selectedWardYearRecord, selectedYearRecords, selectedYear]);
 
   const handleYearSelect = (year) => {
     setSelectedYear(year);
   };
 
-  // Crisis modal state
   const [showCrisisModal, setShowCrisisModal] = useState(false);
 
-  // Show modal when selecting a future year that crosses crisis threshold
   useEffect(() => {
-    if (selectedYear >= 2025 && selectedYear <= 2030) {
+    // Crisis modal only fires for 2027+ — 2025 and 2026 are recovery years
+    if (selectedYear >= 2027 && selectedYear <= 2030) {
       const agg = yearAggregates?.get(selectedYear);
       if (agg && (agg.avg_score >= 85 || agg.max_score >= 95)) {
         setShowCrisisModal(true);
@@ -265,7 +277,6 @@ export default function Dashboard() {
   const renderYearDot = (pointProps, color) => {
     const { cx, cy, payload } = pointProps;
     const isSelected = payload?.year === selectedYear;
-
     return (
       <circle
         cx={cx}
@@ -281,7 +292,6 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    // Re-arm alert when context changes so predicted-year alerts remain visible.
     setAlertDismissed(false);
   }, [highRiskWard?.code, selectedYear, selectedWard?.code]);
 
@@ -295,11 +305,36 @@ export default function Dashboard() {
       }
       return highRiskWard;
     }
-
     return highRiskWard;
   })();
 
-  const showAlert = Boolean(isFutureYear && activeAlertWard && activeAlertWard.score >= 85 && !alertDismissed);
+  // Alert suppressed for 2025 and 2026 (recovery years after 2024 crisis)
+  const showAlert = Boolean(
+    isFutureYear &&
+    !CRISIS_ALERT_EXEMPT_YEARS.has(selectedYear) &&
+    activeAlertWard &&
+    activeAlertWard.score >= 85 &&
+    !alertDismissed
+  );
+
+  /**
+   * Get the display score for a predicted year button.
+   * Priority: ML prediction for selected ward → context dataset record → yearlyData point → "—"
+   */
+  const getPredictedYearScore = (yr) => {
+    // If a ward is selected and we have ML predictions for it, use those
+    if (selectedWard && mlByYear?.has(yr)) {
+      return mlByYear.get(yr);
+    }
+    // Otherwise use the ward+year record from the context dataset (ML-backed after hydration)
+    if (selectedWard) {
+      const record = getWardYearRecord(selectedWard.code, yr);
+      if (record) return record.water_potential_score;
+    }
+    // No ward selected: use the yearly chart data (seed-based fallback)
+    const point = yearlyData.find((p) => p.year === yr);
+    return point ? point.value : null;
+  };
 
   return (
     <div className="min-h-screen bg-[#020817] px-3 py-4 text-white md:px-5 lg:px-6">
@@ -387,7 +422,7 @@ export default function Dashboard() {
                     );
                   })()
                 }
-                <p className="text-xs text-rose-100/90">This alert is shown for future projections (2025 - 2030).</p>
+                <p className="text-xs text-rose-100/90">This alert is shown for future projections (2027 - 2030).</p>
               </div>
 
               <button
@@ -413,9 +448,9 @@ export default function Dashboard() {
               <span className="rounded-md border border-blue-500/35 px-3 py-1.5 text-blue-100/90">Low (0 - 30)</span>
               <span className="rounded-md border border-orange-400/45 px-3 py-1.5 text-orange-200">Medium (30 - 70)</span>
               <span className="rounded-md border border-red-500/45 px-3 py-1.5 text-red-200">High (70 - 100)</span>
-              {mlPrediction !== null && (
+              {mlByYear !== null && (
                 <span className="rounded-md border border-cyan-400/50 bg-cyan-500/20 px-3 py-1.5 text-cyan-200">
-                  📈 Predicted (2025+)
+                  📈 ML Predicted (2025+)
                 </span>
               )}
             </div>
@@ -424,7 +459,7 @@ export default function Dashboard() {
               <div className="mb-2 flex items-center justify-between">
                 <p className="text-xs uppercase tracking-wide text-blue-100/70">
                   Yearly Trend Overview (2012 - 2030)
-                  {mlPrediction !== null && <span className="ml-2 text-xs text-cyan-300">✓ ML Powered</span>}
+                  {mlByYear !== null && <span className="ml-2 text-xs text-cyan-300">✓ ML Powered</span>}
                 </p>
                 <div className="flex items-center gap-2">
                   <span className="rounded-full border border-cyan-400/35 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-cyan-200">
@@ -438,31 +473,22 @@ export default function Dashboard() {
                   )}
                 </div>
               </div>
-                {/* Crisis marker/modal */}
-                {crisisYear && (
-                  <ReferenceLine
-                    x={crisisYear}
-                    stroke="#ff4d4f"
-                    strokeWidth={2}
-                    label={{ value: 'Crisis Peak', position: 'top', fill: '#ff7a7a' }}
-                  />
-                )}
-                {showCrisisModal && (
-                  <div className="fixed left-1/2 top-12 z-50 w-[360px] -translate-x-1/2 transform rounded-lg border border-rose-400/50 bg-rose-800/95 p-4 text-white shadow-xl">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-lg font-bold">⚠️ Water Crisis Expected in {selectedYear}</div>
-                        <div className="text-sm mt-1">High risk detected across multiple wards — immediate action recommended.</div>
-                        {crisisYear && (
-                          <div className="text-xs mt-2 text-rose-100/80">Crisis begins in {crisisYear}</div>
-                        )}
-                      </div>
-                      <div>
-                        <button onClick={() => setShowCrisisModal(false)} className="rounded bg-white/10 px-3 py-1 text-sm">Dismiss</button>
-                      </div>
+              {showCrisisModal && (
+                <div className="fixed left-1/2 top-12 z-50 w-[360px] -translate-x-1/2 transform rounded-lg border border-rose-400/50 bg-rose-800/95 p-4 text-white shadow-xl">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-lg font-bold">⚠️ Water Crisis Expected in {selectedYear}</div>
+                      <div className="text-sm mt-1">High risk detected across multiple wards — immediate action recommended.</div>
+                      {crisisYear && (
+                        <div className="text-xs mt-2 text-rose-100/80">Model projects next crisis from {crisisYear}</div>
+                      )}
+                    </div>
+                    <div>
+                      <button onClick={() => setShowCrisisModal(false)} className="rounded bg-white/10 px-3 py-1 text-sm">Dismiss</button>
                     </div>
                   </div>
-                )}
+                </div>
+              )}
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={yearlyData} margin={{ top: 20, right: 18, left: 6, bottom: 8 }}>
                   <XAxis
@@ -492,7 +518,7 @@ export default function Dashboard() {
                       color: "#e2e8f0",
                     }}
                     formatter={(value, name, props) => {
-                      const label = props.payload.type === "historical" ? "Historical Data" : "Predicted Data";
+                      const label = props.payload.type === "historical" ? "Historical Data" : "ML Predicted";
                       const displayValue = getHistoricalTooltipValue(props.payload) ?? value;
                       return [displayValue, label];
                     }}
@@ -503,28 +529,32 @@ export default function Dashboard() {
                     iconType="circle"
                     wrapperStyle={{ color: "#dbeafe", fontSize: "12px", paddingTop: "8px" }}
                   />
-                  {/* Reference line showing boundary between historical and predicted */}
-                  <ReferenceLine 
-                    x={selectedYear} 
-                    stroke="#666" 
+                  <ReferenceLine
+                    x={selectedYear}
+                    stroke="#666"
                     strokeDasharray="5 5"
                     strokeOpacity={0.9}
                   />
-                  {/* Historical data line (solid blue) */}
-                  <Line 
-                    type="monotone" 
-                    dataKey={(point) => getYearlyChartValue(point, "historical")} 
-                    stroke="#2f8cff" 
-                    strokeWidth={2.75} 
+                  {/* Mark 2024 as the crisis peak */}
+                  <ReferenceLine
+                    x={2024}
+                    stroke="#ff4d4f"
+                    strokeWidth={2}
+                    label={{ value: 'Crisis Peak', position: 'insideTopRight', fill: '#ff7a7a', fontSize: 10 }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey={(point) => getYearlyChartValue(point, "historical")}
+                    stroke="#2f8cff"
+                    strokeWidth={2.75}
                     dot={(pointProps) => renderYearDot(pointProps, "#2f8cff")}
                     name="Historical Data"
                     isAnimationActive={false}
                   />
-                  {/* Predicted data line (dashed cyan) */}
-                  <Line 
-                    type="monotone" 
-                    dataKey={(point) => getYearlyChartValue(point, "predicted")} 
-                    stroke="#06b6d4" 
+                  <Line
+                    type="monotone"
+                    dataKey={(point) => getYearlyChartValue(point, "predicted")}
+                    stroke="#06b6d4"
                     strokeWidth={2.75}
                     strokeDasharray="7 5"
                     dot={(pointProps) => renderYearDot(pointProps, "#06b6d4")}
@@ -542,7 +572,7 @@ export default function Dashboard() {
                   <div className="mb-2 flex items-center justify-between">
                     <p className="text-sm text-blue-100/90">
                       Monthly Trend for {selectedWardLabel} - {selectedYear}
-                      {mlPrediction !== null && <span className="ml-2 text-xs text-cyan-300">✓ ML Prediction</span>}
+                      {mlByYear !== null && <span className="ml-2 text-xs text-cyan-300">✓ ML Prediction</span>}
                     </p>
                     {fetchingPrediction && (
                       <div className="h-3 w-3 animate-spin rounded-full border-2 border-cyan-400 border-t-transparent" />
@@ -605,13 +635,14 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Predicted years (selectable) */}
               <div className="rounded-xl border border-cyan-700/20 bg-[#041627]/70 p-3">
-                <p className="mb-2 text-xs font-semibold text-cyan-300 uppercase">Predicted Future (2025 - 2030)</p>
+                <p className="mb-2 text-xs font-semibold text-cyan-300 uppercase">
+                  ML Predicted Future (2025 - 2030)
+                </p>
                 <div className="flex flex-wrap gap-2">
                   {[2025, 2026, 2027, 2028, 2029, 2030].map((yr) => {
-                    const point = yearlyData.find((p) => p.year === yr) ?? null;
-                    const display = point ? point.value : "—";
+                    const score = getPredictedYearScore(yr);
+                    const isRecoveryYear = yr === 2025 || yr === 2026;
                     return (
                       <button
                         key={yr}
@@ -623,17 +654,28 @@ export default function Dashboard() {
                         }`}
                       >
                         <div className="font-semibold">{yr}</div>
-                        <div className="text-[11px] text-cyan-200/80">{display}</div>
+                        <div className="text-[11px] text-cyan-200/80">
+                          {score !== null ? score : "—"}
+                        </div>
+                        {isRecoveryYear && (
+                          <div className="text-[9px] text-emerald-300/70 leading-tight">recovery</div>
+                        )}
                       </button>
                     );
                   })}
                 </div>
+                <p className="mt-2 text-[10px] text-cyan-300/60">
+                  Scores from ML model · 2025–2026 are post-crisis recovery years
+                </p>
               </div>
 
               {mlPrediction !== null && (
                 <div className="rounded-xl border border-cyan-500/30 bg-[#05173f]/70 p-3">
                   <p className="mb-2 text-xs font-semibold text-cyan-300 uppercase">📈 Model Baseline</p>
-                  <p className="text-xs text-cyan-200/80">ML model baseline prediction: <span className="font-bold text-cyan-300">{mlPrediction}</span>. Future trend displayed on graph with dashed cyan line.</p>
+                  <p className="text-xs text-cyan-200/80">
+                    ML model baseline for {selectedWard?.name ?? "selected ward"} (2024):{" "}
+                    <span className="font-bold text-cyan-300">{mlPrediction}</span>. Future trend shown as dashed cyan line.
+                  </p>
                 </div>
               )}
             </div>
@@ -654,34 +696,6 @@ export default function Dashboard() {
             />
           </section>
         </main>
-
-        {/* <footer className="grid gap-3 pb-2 lg:grid-cols-4">
-          <div className="rounded-xl border border-blue-500/25 bg-[#071935]/80 px-4 py-3 text-sm text-blue-100/85">
-            <p className="mb-1 font-semibold text-cyan-300">AQUALENS-AI</p>
-            <p>AI Powered | Remote Sensing | Night-time Light Analysis</p>
-          </div>
-
-          <div className="rounded-xl border border-blue-500/25 bg-[#071935]/80 px-4 py-3 text-sm text-blue-100/85">
-            <p className="mb-1 flex items-center gap-2 font-semibold text-violet-300">
-              <Database size={16} /> Data Sources
-            </p>
-            <p>VIIRS-NPP Night Light | Census India | SRTM | Bhuvan</p>
-          </div>
-
-          <div className="rounded-xl border border-blue-500/25 bg-[#071935]/80 px-4 py-3 text-sm text-blue-100/85">
-            <p className="mb-1 flex items-center gap-2 font-semibold text-blue-300">
-              <CalendarDays size={16} /> Last Updated
-            </p>
-            <p>May 20, 2025</p>
-          </div>
-
-          <div className="rounded-xl border border-blue-500/25 bg-[#071935]/80 px-4 py-3 text-sm text-blue-100/85">
-            <p className="mb-1 flex items-center gap-2 font-semibold text-emerald-300">
-              <Target size={16} /> Mission
-            </p>
-            <p>Sustainable Water Future</p>
-          </div>
-        </footer> */}
       </div>
     </div>
   );
