@@ -39,7 +39,7 @@ pip-delete-this-directory.txt
 
 ## Data and model artifacts (do not commit large generated files)
 data/*.csv
-outputs/
+
 models/
 server/models/
 
